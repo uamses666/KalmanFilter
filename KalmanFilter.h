@@ -35,22 +35,33 @@ public:
                 1e-5,
                 10 * std_weight_velocity_ * measurement(3);
 
-        Eigen::MatrixXd covariance = std.cwiseProduct(std).asDiagonal();
+        Eigen::MatrixXd covariance(2 * ndim_, 2 * ndim_);
+        covariance.setZero();
+        for (int i = 0; i < 2 * ndim_; ++i) {
+            covariance(i, i) = std(i);
+        }
+
         return std::make_pair(mean, covariance);
     }
 
     std::pair<Eigen::VectorXd, Eigen::MatrixXd> predict(const Eigen::VectorXd& mean, const Eigen::MatrixXd& covariance) {
         Eigen::VectorXd std_pos(4);
-        std_pos << std_weight_position_ * mean(3),
+        std_pos << std_weight_position_ * mean(2),
                 std_weight_position_ * mean(3),
                 1e-2,
                 std_weight_position_ * mean(3);
+
         Eigen::VectorXd std_vel(4);
-        std_vel << std_weight_velocity_ * mean(3),
+        std_vel << std_weight_velocity_ * mean(2),
                 std_weight_velocity_ * mean(3),
                 1e-5,
                 std_weight_velocity_ * mean(3);
-        Eigen::MatrixXd motion_cov = (std_pos.array() * std_pos.array()).matrix().asDiagonal();
+
+        Eigen::MatrixXd motion_cov(2 * ndim_, 2 * ndim_);
+        motion_cov.setZero();
+        for (int i = 0; i < 2 * ndim_; ++i) {
+            motion_cov(i, i) = (i < ndim_) ? std_pos(i) : std_vel(i - ndim_);
+        }
 
         Eigen::VectorXd new_mean = motion_mat_ * mean;
         Eigen::MatrixXd new_covariance = motion_mat_ * covariance * motion_mat_.transpose() + motion_cov;
@@ -58,13 +69,19 @@ public:
         return std::make_pair(new_mean, new_covariance);
     }
 
+
     std::pair<Eigen::VectorXd, Eigen::MatrixXd> project(const Eigen::VectorXd& mean, const Eigen::MatrixXd& covariance) {
         Eigen::VectorXd std(4);
         std << std_weight_position_ * mean(3),
                 std_weight_position_ * mean(3),
                 1e-1,
                 std_weight_position_ * mean(3);
-        Eigen::MatrixXd innovation_cov = (std.array() * std.array()).matrix().asDiagonal();
+
+        Eigen::MatrixXd innovation_cov(ndim_, ndim_);
+        innovation_cov.setZero();
+        for (int i = 0; i < ndim_; ++i) {
+            innovation_cov(i, i) = std(i);
+        }
 
         Eigen::VectorXd projected_mean = update_mat_ * mean;
         Eigen::MatrixXd projected_covariance = update_mat_ * covariance * update_mat_.transpose() + innovation_cov;
@@ -80,14 +97,19 @@ public:
         Eigen::MatrixXd cholesky_factor = projected_covariance.llt().matrixL();
         Eigen::VectorXd innovation = measurement - projected_mean;
         Eigen::VectorXd z = cholesky_factor.triangularView<Eigen::Lower>().solve(innovation);
-        Eigen::VectorXd squared_maha = z.array() * z.array();
 
-        Eigen::MatrixXd kalman_gain = projected_covariance * update_mat_.transpose() * z;
-        Eigen::VectorXd new_mean = mean + kalman_gain;
-        Eigen::MatrixXd new_covariance = covariance - kalman_gain * projected_covariance * kalman_gain.transpose();
+        Eigen::MatrixXd kalman_gain = covariance * update_mat_.transpose() * (update_mat_ * covariance * update_mat_.transpose() + projected_covariance).inverse();
+
+        assert(kalman_gain.cols() == update_mat_.rows());
+
+        Eigen::VectorXd new_mean = mean + kalman_gain * z;
+
+        Eigen::MatrixXd I = Eigen::MatrixXd::Identity(covariance.rows(), covariance.cols());
+        Eigen::MatrixXd new_covariance = (I - kalman_gain * update_mat_) * covariance;
 
         return std::make_pair(new_mean, new_covariance);
     }
+
 
 private:
     int ndim_;
@@ -97,6 +119,5 @@ private:
     double std_weight_position_;
     double std_weight_velocity_;
 };
-
 
 #endif //KALMANFILTER_KALMANFILTER_H
